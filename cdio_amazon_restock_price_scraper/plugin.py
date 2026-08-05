@@ -1,47 +1,111 @@
+import re
+from typing import Dict, Optional
 from pluggy import HookimplMarker
-from typing import Dict
-from changedetectionio.model import Watch as Watch
+from bs4 import BeautifulSoup
+from price_parser import Price
 
-plugin_namespace = "changedetectionio.restock_price_scraper"
-hookimpl = HookimplMarker(plugin_namespace)
+hookimpl_cdio = HookimplMarker("changedetectionio")
+hookimpl_restock = HookimplMarker("changedetectionio.restock_price_scraper")
 
 class restock_price_scraper(object):
 
-    @hookimpl
-    def scrape_price_restock(self, watch: Watch.model, html_content: str, screenshot: bytes, update_obj: Dict) -> Dict:
+    @staticmethod
+    @hookimpl_cdio
+    @hookimpl_restock
+    def get_itemprop_availability_override(content: str, fetcher_name: str, fetcher_instance, url: str, llm_intent=None) -> Optional[Dict]:
         """
-         Scrape price and restock data from html_content and/or screenshot and return via update_obj
+        Custom implementation of get_itemprop_availability for Amazon pages (amazon.de, amazon.com, amzn.eu, etc.).
+        """
+        url_lower = (url or '').lower()
+        is_amazon = bool(re.search(r'https?://([^/]+\.)?(amazon\.[a-z\.]+|amzn\.[a-z]+)', url_lower)) or ('amazon.' in url_lower) or ('amzn.' in url_lower)
 
-         Args:
-             watch (Watch.model): The watch object containing watch configuration.
-             html_content (str): The HTML content to scrape.
-             screenshot (bytes): The screenshot data.
-             update_obj (Dict): The dictionary to update with scraped data.
+        if not is_amazon:
+            return None
 
-         Returns:
-             Optional[Dict]: The updated dictionary with the scraped price data, or None if no update is made.
-         """
-        if not update_obj.get('restock', {}).get('price'):
-            # Only for amazon pages
-            if '://amazon.' or 'www.amazon.' in watch.get('url', ''):
-                from bs4 import BeautifulSoup
+        soup = BeautifulSoup(content, 'html.parser')
+        price = restock_price_scraper._extract_amazon_price(soup)
 
-                # Parse the HTML content
-                soup = BeautifulSoup(html_content, 'html.parser')
+        if price is not None:
+            return {
+                'price': price,
+                'availability': 'in stock',
+                'currency': 'EUR' if ('amazon.de' in url_lower or '€' in content) else 'USD'
+            }
+        return None
 
-                # Find the first ".a-price" element
-                price_container = soup.find('span', class_='a-price')
+    @staticmethod
+    @hookimpl_cdio
+    @hookimpl_restock
+    def scrape_price_restock(watch, html_content: str, screenshot: bytes, update_obj: Dict) -> Dict:
+        """
+        Legacy hook implementation for changedetection.io.
+        """
+        url = (watch.get("url") or "").lower()
+        is_amazon = bool(re.search(r"https?://([^/]+\.)?(amazon\.[a-z\.]+|amzn\.[a-z]+)", url)) or ("amazon." in url) or ("amzn." in url)
 
-                # Find the first ".a-price-whole" and ".a-price-fraction" within the ".a-price" container
-                if price_container:
-                    whole_part = price_container.find('span', class_='a-price-whole').text.strip().strip(',.')
-                    decimal_part = price_container.find('span', class_='a-price-fraction').text.strip().strip(',.')
-                    if not decimal_part:
-                        decimal_part = 0
+        if is_amazon:
+            if not update_obj.get("restock", {}).get("price"):
+                if "restock" not in update_obj or not isinstance(update_obj["restock"], dict):
+                    update_obj["restock"] = {}
 
-                    if whole_part:
-                        # Combine and convert the extracted text to a float
-                        update_obj['restock']['price'] = float(f"xxxxx{whole_part}.{decimal_part}")
+                soup = BeautifulSoup(html_content, "html.parser")
+                extracted_price = restock_price_scraper._extract_amazon_price(soup)
+
+                if extracted_price is not None:
+                    update_obj["restock"]["price"] = float(extracted_price)
+                    update_obj["restock"]["in_stock"] = True
 
         return update_obj
 
+    @staticmethod
+    def _extract_amazon_price(soup: BeautifulSoup) -> Optional[float]:
+        """
+        Extract price matching modern Amazon HTML structures (amazon.de, amazon.com, etc.).
+        """
+        selectors = [
+            "#corePriceDisplay_desktop_feature_div span.a-offscreen",
+            "#corePrice_desktop span.a-offscreen",
+            "#corePrice_feature_div span.a-offscreen",
+            ".apexPriceToPay span.a-offscreen",
+            "span.a-price.aok-align-center span.a-offscreen",
+            "span.a-price span.a-offscreen",
+            "#priceblock_ourprice",
+            "#priceblock_dealprice",
+            "#price_inside_buybox",
+            "#buyBoxAccordion span.a-price span.a-offscreen",
+            ".sns-base-price span.a-offscreen"
+        ]
+
+        for selector in selectors:
+            for elem in soup.select(selector):
+                text = elem.text.strip()
+                if text:
+                    p = Price.fromstring(text)
+                    if p and p.amount_float is not None:
+                        return float(p.amount_float)
+
+        price_container = soup.find("span", class_="a-price")
+        if price_container:
+            whole_elem = price_container.find("span", class_="a-price-whole")
+            fraction_elem = price_container.find("span", class_="a-price-fraction")
+            if whole_elem:
+                whole_str = whole_elem.text.strip().rstrip(",.").replace(".", "").replace(",", "")
+                fraction_str = fraction_elem.text.strip().rstrip(",.") if fraction_elem else "00"
+                if whole_str and whole_str.isdigit():
+                    try:
+                        return float(f"{whole_str}.{fraction_str}")
+                    except ValueError:
+                        pass
+
+        price_match = re.search(r"(\d{1,3}(?:\.\d{3})*|\d+)[,\.](\d{2})\s*€|€\s*(\d{1,3}(?:\.\d{3})*|\d+)[,\.](\d{2})", soup.text)
+        if price_match:
+            groups = [g for g in price_match.groups() if g is not None]
+            if len(groups) >= 2:
+                whole = groups[0].replace(".", "")
+                frac = groups[1]
+                try:
+                    return float(f"{whole}.{frac}")
+                except ValueError:
+                    pass
+
+        return None

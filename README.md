@@ -1,32 +1,66 @@
-AUGUST 2024 - DEPRECATED! DO NOT USE!
+# Amazon Price Scraper Plugin for changedetection.io
 
-# Amazon price scraper plugin for changedetection.io
+An enhanced **Restock & Price Detection** scraper plugin for [changedetection.io](https://changedetection.io). 
 
-This small plugin enhances the **"Restock & Price detection"** website watch mode for amazon.com URLs.
+This plugin extracts prices and stock availability from Amazon product pages (including **amazon.de**, **amazon.com**, **amzn.eu**, **amazon.co.uk**, etc.) and feeds structured price data into the changedetection.io engine.
 
-A small scraper to get the price data from Amazon pages which can be used to improve the ["restock and price detection" mode in changedetection.io when monitoring Amazon prices](https://changedetection.io).
+---
 
-Because amazon.com does not use any normal/regular embedded product data (such as LD-JSON etc), this scraper will try to find the price by looking at the HTML.
+## Features & Improvements
 
-This plugin only works with https://github.com/dgtlmoon/changedetection.io
+- **Full Amazon.de & European Support**: Supports German/European price formats (`12,99 €`, `1.499,95 €`) as well as US formats (`$12.99`).
+- **Modern Selector Cascade**: Extracts prices from current Amazon desktop/mobile DOM layouts:
+  - `#corePriceDisplay_desktop_feature_div span.a-offscreen`
+  - `#corePrice_desktop span.a-offscreen`
+  - `#corePrice_feature_div span.a-offscreen`
+  - `.apexPriceToPay span.a-offscreen`
+  - `span.a-price.aok-align-center span.a-offscreen`
+  - `span.a-price span.a-offscreen`
+  - `#priceblock_ourprice`, `#priceblock_dealprice`, `#price_inside_buybox`
+  - Structured `span.a-price-whole` & `span.a-price-fraction` parsing.
+  - Regex fallback for localized currency formatting.
+- **Pluggy Hook Compliance**:
+  - Implements `get_itemprop_availability_override` (used by `changedetectionio.pluggy_interface`) returning `{ 'price': float, 'availability': 'in stock', 'currency': 'EUR'|'USD' }`.
+  - Implements `scrape_price_restock` for legacy compatibility.
+  - Decorator `@staticmethod` ensures smooth execution without `TypeError` missing `self` positional arguments.
 
-Using this plugin you can see the Amazon product prices in your dashboard.
+---
 
-[![Dashboard screenshot of monitoring Amazon prices](https://raw.githubusercontent.com/dgtlmoon/changedetection.io/master/docs/restock-overview.png)](https://changedetection.io)
+## Plugin Architecture & Extension Guide
 
-Then you can further set the different conditions to get notifications of price changes
+If you need to extend or update this scraper in the future:
 
-[![Setting price change alerts](https://raw.githubusercontent.com/dgtlmoon/changedetection.io/master/docs/restock-settings.png)](https://changedetection.io)
+### File Structure
+- `cdio_amazon_restock_price_scraper/plugin.py`: Contains the `restock_price_scraper` class with `@staticmethod` hook implementations.
+- `setup.py`: Entry points registered under both `changedetectionio` and `changedetectionio.restock_price_scraper`.
 
-Such as
+### How changedetection.io calls this plugin
+When changedetection runs the `restock_diff` processor on an Amazon URL:
+1. `get_itemprop_availability_from_plugin` in `pluggy_interface.py` triggers `plugin_manager.hook.get_itemprop_availability_override(...)`.
+2. `restock_price_scraper.get_itemprop_availability_override` evaluates the URL and HTML content using `BeautifulSoup` and `price_parser.Price`.
+3. The extracted price is returned as a float in the dictionary:
+   ```python
+   {
+       'price': 19.99,
+       'availability': 'in stock',
+       'currency': 'EUR'
+   }
+   ```
+4. Changedetection updates `update_obj['restock']` and triggers price alerts/notifications.
 
-- Minimum and maximum price alerts
-- Threshold in % for price movement alerts
+---
 
-Then you can connect all your favourite notification services to get alerts when Amazon price changes such as Discord, Google Chat, Gotify, Line, Matrix, Microsoft teams, Microsoft Power, ntfy, Nextcloud, Office 365 and everythign else from https://github.com/caronc/apprise
+## Configuration & Usage in changedetection.io
 
-It is _highly recommended_ to use the Chrome fetcher method with this plugin.
+1. **Fetch Method**: Set the Watch **Fetch Method** to **`Use Chrome / WebDriver`** (Amazon renders price elements dynamically with JS).
+2. **Processor Mode**: Set the Watch **Processor** to **`Restock & Price`** and enable **`Follow price changes`**.
+3. **Notification Templates**: Use variables such as:
+   - `{{restock.price}}` - Current extracted price
+   - `{{restock.in_stock}}` - Stock status (`True`/`False`)
+   - `{{restock.original_price}}` - Previous price
 
-This plugin comes installed in changedetection.io since `0.46.03`
+---
 
+## License
 
+Apache-2.0
