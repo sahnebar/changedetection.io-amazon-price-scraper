@@ -5,7 +5,7 @@ setup(
     author="dgtlmoon",
     url='https://changedetection.io',
     author_email="dgtlmoon@gmail.com",
-    version="0.36",
+    version="1.0.0",
     packages=["cdio_amazon_restock_price_scraper"],
     install_requires=["changedetection.io", "price-parser", "beautifulsoup4"],
     python_requires=">= 3.10",
